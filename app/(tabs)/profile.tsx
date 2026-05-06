@@ -1,10 +1,10 @@
 import { StyleSheet, Text, View } from 'react-native';
 
-export default function ExploreScreen() {
+export default function ProfileScreen() {
   return (
     <View style={styles.screen}>
-      <Text style={styles.title}>Explore</Text>
-      <Text style={styles.copy}>Discover new study sets and trending topics soon.</Text>
+      <Text style={styles.title}>Profile</Text>
+      <Text style={styles.copy}>Track your mastered cards, streaks, and weekly goals here.</Text>
     </View>
   );
 }

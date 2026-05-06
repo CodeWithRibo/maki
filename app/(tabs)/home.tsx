@@ -1,10 +1,10 @@
 import { StyleSheet, Text, View } from 'react-native';
 
-export default function ExploreScreen() {
+export default function HomeScreen() {
   return (
     <View style={styles.screen}>
-      <Text style={styles.title}>Explore</Text>
-      <Text style={styles.copy}>Discover new study sets and trending topics soon.</Text>
+      <Text style={styles.title}>Home</Text>
+      <Text style={styles.copy}>Welcome back. Jump into Library to continue your flashcard streak.</Text>
     </View>
   );
 }

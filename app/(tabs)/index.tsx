@@ -1,98 +1,231 @@
-import { Image } from 'expo-image';
-import { Platform, StyleSheet } from 'react-native';
+import { useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { router } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 
-import { HelloWave } from '@/components/hello-wave';
-import ParallaxScrollView from '@/components/parallax-scroll-view';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Link } from 'expo-router';
+import { MakiBottomSheet } from '@/components/maki-bottom-sheet';
+import { useMakiStore } from '@/hooks/use-maki-store';
 
-export default function HomeScreen() {
+export default function LibraryScreen() {
+  const { decks, toggleArchive, deleteDeck, renameDeck, addDeck } = useMakiStore();
+  const [selectedDeckId, setSelectedDeckId] = useState<string | null>(null);
+
+  const selectedDeck = useMemo(
+    () => decks.find((deck) => deck.id === selectedDeckId) ?? null,
+    [decks, selectedDeckId]
+  );
+  const activeDecks = useMemo(() => decks.filter((deck) => !deck.archived), [decks]);
+  const archivedDecks = useMemo(() => decks.filter((deck) => deck.archived), [decks]);
+
   return (
-    <ParallaxScrollView
-      headerBackgroundColor={{ light: '#A1CEDC', dark: '#1D3D47' }}
-      headerImage={
-        <Image
-          source={require('@/assets/images/partial-react-logo.png')}
-          style={styles.reactLogo}
-        />
-      }>
-      <ThemedView style={styles.titleContainer}>
-        <ThemedText type="title">Welcome!</ThemedText>
-        <HelloWave />
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 1: Try it</ThemedText>
-        <ThemedText>
-          Edit <ThemedText type="defaultSemiBold">app/(tabs)/index.tsx</ThemedText> to see changes.
-          Press{' '}
-          <ThemedText type="defaultSemiBold">
-            {Platform.select({
-              ios: 'cmd + d',
-              android: 'cmd + m',
-              web: 'F12',
-            })}
-          </ThemedText>{' '}
-          to open developer tools.
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <Link href="/modal">
-          <Link.Trigger>
-            <ThemedText type="subtitle">Step 2: Explore</ThemedText>
-          </Link.Trigger>
-          <Link.Preview />
-          <Link.Menu>
-            <Link.MenuAction title="Action" icon="cube" onPress={() => alert('Action pressed')} />
-            <Link.MenuAction
-              title="Share"
-              icon="square.and.arrow.up"
-              onPress={() => alert('Share pressed')}
-            />
-            <Link.Menu title="More" icon="ellipsis">
-              <Link.MenuAction
-                title="Delete"
-                icon="trash"
-                destructive
-                onPress={() => alert('Delete pressed')}
-              />
-            </Link.Menu>
-          </Link.Menu>
-        </Link>
+    <View style={styles.screen}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}>
+        <Text style={styles.header}>Library</Text>
 
-        <ThemedText>
-          {`Tap the Explore tab to learn more about what's included in this starter app.`}
-        </ThemedText>
-      </ThemedView>
-      <ThemedView style={styles.stepContainer}>
-        <ThemedText type="subtitle">Step 3: Get a fresh start</ThemedText>
-        <ThemedText>
-          {`When you're ready, run `}
-          <ThemedText type="defaultSemiBold">npm run reset-project</ThemedText> to get a fresh{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> directory. This will move the current{' '}
-          <ThemedText type="defaultSemiBold">app</ThemedText> to{' '}
-          <ThemedText type="defaultSemiBold">app-example</ThemedText>.
-        </ThemedText>
-      </ThemedView>
-    </ParallaxScrollView>
+        <Section title="Last 7 days" />
+        {activeDecks.map((deck) => (
+          <Pressable
+            key={deck.id}
+            style={styles.card}
+            onPress={() => router.push({ pathname: '/study/[deckId]', params: { deckId: deck.id } })}>
+            <Text style={styles.cardTitle}>{deck.title}</Text>
+            <Text style={styles.cardSub}>{deck.cards.length} Flashcards</Text>
+            <Pressable
+              style={styles.menuButton}
+              onPress={(event) => {
+                event.stopPropagation();
+                setSelectedDeckId(deck.id);
+              }}>
+              <Ionicons name="ellipsis-vertical" color="#CBD5E1" size={18} />
+            </Pressable>
+          </Pressable>
+        ))}
+
+        <Section title="Archived" />
+        {archivedDecks.map((deck) => (
+          <Pressable
+            key={deck.id}
+            style={[styles.card, styles.archivedCard]}
+            onPress={() => router.push({ pathname: '/study/[deckId]', params: { deckId: deck.id } })}>
+            <Text style={styles.cardTitle}>{deck.title}</Text>
+            <Text style={styles.cardSub}>{deck.cards.length} Flashcards</Text>
+            <Pressable
+              style={styles.menuButton}
+              onPress={(event) => {
+                event.stopPropagation();
+                setSelectedDeckId(deck.id);
+              }}>
+              <Ionicons name="ellipsis-vertical" color="#CBD5E1" size={18} />
+            </Pressable>
+          </Pressable>
+        ))}
+      </ScrollView>
+
+      <Pressable style={styles.fab} onPress={addDeck}>
+        <Ionicons name="add" color="#0F172A" size={22} />
+      </Pressable>
+
+      <MakiBottomSheet visible={selectedDeck !== null} onClose={() => setSelectedDeckId(null)} title="Deck actions">
+        {selectedDeck ? (
+          <View style={styles.sheetActionList}>
+            <ActionRow
+              label="Edit"
+              icon={<Ionicons name="create-outline" color="#E2E8F0" size={18} />}
+              onPress={() => {
+                renameDeck(selectedDeck.id, `${selectedDeck.title} (Edited)`);
+                setSelectedDeckId(null);
+              }}
+            />
+            <ActionRow
+              label={selectedDeck.archived ? 'Unarchive' : 'Archive'}
+              icon={
+                selectedDeck.archived ? (
+                  <Ionicons name="folder-open-outline" color="#E2E8F0" size={18} />
+                ) : (
+                  <Ionicons name="archive-outline" color="#E2E8F0" size={18} />
+                )
+              }
+              onPress={() => {
+                toggleArchive(selectedDeck.id);
+                setSelectedDeckId(null);
+              }}
+            />
+            <ActionRow
+              label="Delete Study Set"
+              icon={<Ionicons name="trash-outline" color="#F87171" size={18} />}
+              destructive
+              onPress={() => {
+                deleteDeck(selectedDeck.id);
+                setSelectedDeckId(null);
+              }}
+            />
+          </View>
+        ) : null}
+      </MakiBottomSheet>
+    </View>
+  );
+}
+
+function Section({ title }: { title: string }) {
+  return <Text style={styles.section}>{title}</Text>;
+}
+
+function ActionRow({
+  label,
+  icon,
+  destructive = false,
+  onPress,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  destructive?: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable style={styles.sheetAction} onPress={onPress}>
+      {icon}
+      <Text style={[styles.sheetActionText, destructive && styles.destructive]}>{label}</Text>
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
-  titleContainer: {
+  screen: {
+    flex: 1,
+    backgroundColor: '#0B132B',
+  },
+  scroll: {
+    flex: 1,
+  },
+  content: {
+    paddingHorizontal: 18,
+    paddingTop: 62,
+    paddingBottom: 140,
+  },
+  header: {
+    color: '#F8FAFC',
+    fontSize: 34,
+    fontWeight: '800',
+    marginBottom: 18,
+  },
+  section: {
+    color: '#94A3B8',
+    fontWeight: '700',
+    fontSize: 13,
+    textTransform: 'uppercase',
+    marginTop: 10,
+    marginBottom: 10,
+    letterSpacing: 0.9,
+  },
+  card: {
+    backgroundColor: '#1C2541',
+    borderRadius: 18,
+    paddingVertical: 18,
+    paddingHorizontal: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    position: 'relative',
+  },
+  archivedCard: {
+    opacity: 0.88,
+  },
+  cardTitle: {
+    color: '#F8FAFC',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+    marginBottom: 8,
+    paddingRight: 34,
+  },
+  cardSub: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  menuButton: {
+    position: 'absolute',
+    right: 12,
+    bottom: 12,
+    padding: 8,
+    borderRadius: 10,
+  },
+  fab: {
+    position: 'absolute',
+    right: 18,
+    bottom: 94,
+    height: 56,
+    width: 56,
+    borderRadius: 28,
+    backgroundColor: '#FDE047',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#FDE047',
+    shadowOpacity: 0.35,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 7,
+  },
+  sheetActionList: {
+    gap: 4,
+  },
+  sheetAction: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
   },
-  stepContainer: {
-    gap: 8,
-    marginBottom: 8,
+  sheetActionText: {
+    color: '#E2E8F0',
+    fontSize: 16,
+    fontWeight: '600',
   },
-  reactLogo: {
-    height: 178,
-    width: 290,
-    bottom: 0,
-    left: 0,
-    position: 'absolute',
+  destructive: {
+    color: '#F87171',
   },
 });
