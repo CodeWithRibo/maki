@@ -21,7 +21,7 @@ import type { Deck, Flashcard } from '@/types/maki';
 
 type DeckFilter = 'all' | 'active' | 'archived';
 type DeckSort = 'recent' | 'title';
-type PendingAction = { type: 'toggleArchive' | 'delete'; deckId: string } | null;
+type PendingAction = { type: 'toggleArchive' | 'delete' | 'resetProgress'; deckId: string } | null;
 
 const FILTER_OPTIONS: { value: DeckFilter; label: string }[] = [
   { value: 'all', label: 'All' },
@@ -35,7 +35,7 @@ const SORT_OPTIONS: { value: DeckSort; label: string }[] = [
 ];
 
 export default function LibraryScreen() {
-  const { decks, toggleArchive, deleteDeck, renameDeck, addDeck } = useMakiStore();
+  const { decks, toggleArchive, deleteDeck, renameDeck, addDeck, resetProgress } = useMakiStore();
   const [selectedDeckId, setSelectedDeckId] = useState<string | null>(null);
   const [filterBy, setFilterBy] = useState<DeckFilter>('all');
   const [sortBy, setSortBy] = useState<DeckSort>('recent');
@@ -156,6 +156,9 @@ export default function LibraryScreen() {
     if (pendingAction.type === 'delete') {
       deleteDeck(pendingAction.deckId);
       showNotice('Study set deleted and auto-saved.');
+    } else if (pendingAction.type === 'resetProgress') {
+      resetProgress(pendingAction.deckId);
+      showNotice('Progress reset for this study set.');
     } else {
       toggleArchive(pendingAction.deckId);
       showNotice('Study set updated and auto-saved.');
@@ -235,7 +238,7 @@ export default function LibraryScreen() {
           setPendingImportedCards(null);
           setCreateVisible(true);
         }}>
-        <Ionicons name="add" color="#0F172A" size={22} />
+        <Ionicons name="add" color="#0F172A" size={30} />
       </Pressable>
 
       <MakiBottomSheet visible={selectedDeck !== null} onClose={() => setSelectedDeckId(null)} title="Deck actions">
@@ -262,6 +265,14 @@ export default function LibraryScreen() {
               }
               onPress={() => {
                 setPendingAction({ type: 'toggleArchive', deckId: selectedDeck.id });
+                setSelectedDeckId(null);
+              }}
+            />
+            <ActionRow
+              label="Reset Progress"
+              icon={<Ionicons name="refresh-outline" color="#E2E8F0" size={18} />}
+              onPress={() => {
+                setPendingAction({ type: 'resetProgress', deckId: selectedDeck.id });
                 setSelectedDeckId(null);
               }}
             />
@@ -348,14 +359,22 @@ export default function LibraryScreen() {
       <MakiBottomSheet
         visible={pendingAction !== null}
         onClose={() => setPendingAction(null)}
-        title={pendingAction?.type === 'delete' ? 'Delete study set?' : 'Update study set?'}>
+        title={
+          pendingAction?.type === 'delete'
+            ? 'Delete study set?'
+            : pendingAction?.type === 'resetProgress'
+              ? 'Reset progress?'
+              : 'Update study set?'
+        }>
         <View style={styles.confirmBlock}>
           <Text style={styles.confirmCopy}>
             {pendingAction?.type === 'delete'
               ? `Are you sure you want to delete "${pendingDeck?.title ?? 'this study set'}"?`
-              : `Are you sure you want to ${
-                  pendingDeck?.archived ? 'unarchive' : 'archive'
-                } "${pendingDeck?.title ?? 'this study set'}"?`}
+              : pendingAction?.type === 'resetProgress'
+                ? `Are you sure you want to reset progress for "${pendingDeck?.title ?? 'this study set'}"? All ratings will be cleared.`
+                : `Are you sure you want to ${
+                    pendingDeck?.archived ? 'unarchive' : 'archive'
+                  } "${pendingDeck?.title ?? 'this study set'}"?`}
           </Text>
           <View style={styles.formActions}>
             <Pressable style={styles.secondaryButton} onPress={() => setPendingAction(null)}>
@@ -364,7 +383,8 @@ export default function LibraryScreen() {
             <Pressable
               style={[
                 styles.primaryButton,
-                pendingAction?.type === 'delete' && styles.destructiveButton,
+                (pendingAction?.type === 'delete' || pendingAction?.type === 'resetProgress') &&
+                  styles.destructiveButton,
               ]}
               onPress={handleConfirmAction}>
               <Text style={styles.primaryButtonText}>
@@ -486,6 +506,7 @@ function parseQuestionAnswerCsv(input: string) {
       message: 'Invalid CSV format. Use Vaia format headers like: Question,Answer A,Answer A is correct,...',
       rows: [] as {
         question: string;
+        imageUri?: string;
         options: { id: string; text: string }[];
         correctOptionId: string;
       }[],
@@ -500,52 +521,63 @@ function parseQuestionAnswerCsv(input: string) {
       message: 'Invalid CSV header. First column must be exactly: Question',
       rows: [] as {
         question: string;
+        imageUri?: string;
         options: { id: string; text: string }[];
         correctOptionId: string;
       }[],
     };
   }
 
+  let imageIndex = -1;
   const answerPairs: { answerIndex: number; correctnessIndex: number; optionId: string }[] = [];
-  for (let index = 1; index < header.length; index += 2) {
-    const answerHeader = header[index]?.trim();
-    const correctHeader = header[index + 1]?.trim();
-    const answerMatch = /^Answer\s+([A-G])$/i.exec(answerHeader ?? '');
-    if (!answerMatch || correctHeader !== `${answerHeader} is correct`) {
-      return {
-        valid: false,
-        message:
-          'Invalid CSV header format. Expected: Question,Answer A,Answer A is correct,Answer B,Answer B is correct,...',
-        rows: [] as {
-          question: string;
-          options: { id: string; text: string }[];
-          correctOptionId: string;
-        }[],
-      };
+  
+  for (let index = 1; index < header.length; index++) {
+    const colHeader = header[index]?.trim();
+    if (colHeader?.toLowerCase() === 'image') {
+      imageIndex = index;
+      continue;
     }
+    
+    // We expect Answer [A-G] and its correctness to be adjacent if not an image column
+    // But the current logic assumes they are in pairs: Answer A, Answer A is correct
+    // Let's refine this to skip the image column and still find pairs.
+  }
 
-    answerPairs.push({
-      answerIndex: index,
-      correctnessIndex: index + 1,
-      optionId: answerMatch[1].toLowerCase(),
-    });
+  // Re-detecting pairs while respecting imageIndex
+  for (let index = 1; index < header.length; index++) {
+    if (index === imageIndex) continue;
+    
+    const answerHeader = header[index]?.trim();
+    const answerMatch = /^Answer\s+([A-G])$/i.exec(answerHeader ?? '');
+    
+    if (answerMatch) {
+      const nextIndex = index + 1 === imageIndex ? index + 2 : index + 1;
+      const correctHeader = header[nextIndex]?.trim();
+      
+      if (correctHeader === `${answerHeader} is correct`) {
+        answerPairs.push({
+          answerIndex: index,
+          correctnessIndex: nextIndex,
+          optionId: answerMatch[1].toLowerCase(),
+        });
+        // Skip the correctness column in the next iteration
+        if (nextIndex > index) index = nextIndex;
+      }
+    }
   }
 
   if (!answerPairs.length) {
     return {
       valid: false,
       message: 'CSV must contain at least one answer pair: Answer A and Answer A is correct.',
-      rows: [] as {
-        question: string;
-        options: { id: string; text: string }[];
-        correctOptionId: string;
-      }[],
+      rows: [] as any[],
     };
   }
 
   const mappedRows = dataRows
     .map((columns, rowIndex) => {
       const question = (columns[0] ?? '').trim();
+      const imageUri = imageIndex !== -1 ? (columns[imageIndex] ?? '').trim() : undefined;
       const options: { id: string; text: string }[] = [];
       let correctOptionId = '';
 
@@ -606,7 +638,7 @@ function parseQuestionAnswerCsv(input: string) {
         };
       }
 
-      return { valid: true, message: '', row: { question, options, correctOptionId } };
+      return { valid: true, message: '', row: { question, imageUri, options, correctOptionId } };
     })
     .filter((item) => item.row !== null || item.message.length > 0);
 
@@ -614,11 +646,7 @@ function parseQuestionAnswerCsv(input: string) {
     return {
       valid: false,
       message: 'CSV has no valid data rows.',
-      rows: [] as {
-        question: string;
-        options: { id: string; text: string }[];
-        correctOptionId: string;
-      }[],
+      rows: [] as any[],
     };
   }
 
@@ -627,11 +655,7 @@ function parseQuestionAnswerCsv(input: string) {
     return {
       valid: false,
       message: invalidRow.message,
-      rows: [] as {
-        question: string;
-        options: { id: string; text: string }[];
-        correctOptionId: string;
-      }[],
+      rows: [] as any[],
     };
   }
 
@@ -676,12 +700,30 @@ function parseCsvLine(line: string) {
 }
 
 function buildCardsFromQuestionAnswerRows(
-  rows: { question: string; options: { id: string; text: string }[]; correctOptionId: string }[]
+  rows: { question: string; imageUri?: string; options: { id: string; text: string }[]; correctOptionId: string }[]
 ) {
+  const batchId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
   return rows.map<Flashcard>((row, rowIndex) => {
+    let normalizedImageUri: string | undefined;
+    
+    if (row.imageUri) {
+      const uri = row.imageUri.trim();
+      if (uri.length > 0) {
+        if (uri.startsWith('http://') || uri.startsWith('https://') || uri.startsWith('data:')) {
+          normalizedImageUri = uri;
+        } else if (uri.startsWith('file://')) {
+          normalizedImageUri = uri;
+        } else if (uri.length > 0) {
+          normalizedImageUri = `file://${uri.startsWith('/') ? '' : '/'}${uri}`;
+        }
+      }
+    }
+
     return {
-      id: `imported-${Date.now()}-${rowIndex}`,
+      id: `imported-${batchId}-${rowIndex}`,
       question: row.question,
+      imageUri: normalizedImageUri,
       options: row.options,
       correctOptionId: row.correctOptionId,
       createdAt: new Date(Date.now() - rowIndex * 1000).toISOString(),
@@ -827,7 +869,7 @@ const styles = StyleSheet.create({
   fab: {
     position: 'absolute',
     right: 18,
-    bottom: 94,
+    bottom: 30,
     height: 56,
     width: 56,
     borderRadius: 28,

@@ -17,6 +17,7 @@ type CardRow = {
   id: string;
   deck_id: string;
   question: string;
+  image_uri: string | null;
   option_a: string;
   option_b: string;
   option_c: string;
@@ -27,6 +28,7 @@ type CardRow = {
 };
 
 let databasePromise: Promise<SQLite.SQLiteDatabase> | null = null;
+let writeQueue: Promise<void> = Promise.resolve();
 let sqliteModulePromise: Promise<typeof import('expo-sqlite')> | null = null;
 let webMemoryStore: Deck[] | null = null;
 
@@ -92,26 +94,23 @@ async function getDatabase() {
 async function ensureSchema() {
   const db = await getDatabase();
 
-  await db.runAsync('PRAGMA journal_mode = WAL');
-  await db.runAsync(`
+  await db.execAsync('PRAGMA journal_mode = WAL');
+  await db.execAsync(`
     CREATE TABLE IF NOT EXISTS app_meta (
       key TEXT PRIMARY KEY NOT NULL,
       value TEXT NOT NULL
-    )
-  `);
-  await db.runAsync(`
+    );
     CREATE TABLE IF NOT EXISTS decks (
       id TEXT PRIMARY KEY NOT NULL,
       title TEXT NOT NULL,
       archived INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL
-    )
-  `);
-  await db.runAsync(`
+    );
     CREATE TABLE IF NOT EXISTS cards (
       id TEXT PRIMARY KEY NOT NULL,
       deck_id TEXT NOT NULL,
       question TEXT NOT NULL,
+      image_uri TEXT,
       option_a TEXT NOT NULL,
       option_b TEXT NOT NULL,
       option_c TEXT NOT NULL,
@@ -120,69 +119,81 @@ async function ensureSchema() {
       created_at TEXT NOT NULL,
       last_rating TEXT,
       FOREIGN KEY(deck_id) REFERENCES decks(id) ON DELETE CASCADE
-    )
+    );
   `);
 
   const cardColumns = await db.getAllAsync<{ name: string }>('PRAGMA table_info(cards)');
   const hasOptionsJson = cardColumns.some((column) => column.name === 'options_json');
   if (!hasOptionsJson) {
-    await db.runAsync('ALTER TABLE cards ADD COLUMN options_json TEXT');
+    try {
+      await db.runAsync('ALTER TABLE cards ADD COLUMN options_json TEXT');
+    } catch (e) {
+      console.warn('Failed to add options_json column:', e);
+    }
+  }
+  const hasImageUri = cardColumns.some((column) => column.name === 'image_uri');
+  if (!hasImageUri) {
+    try {
+      await db.runAsync('ALTER TABLE cards ADD COLUMN image_uri TEXT');
+    } catch (e) {
+      console.warn('Failed to add image_uri column:', e);
+    }
   }
 }
 
 async function writeAllDecks(decks: Deck[]) {
-  const db = await getDatabase();
+  writeQueue = writeQueue.then(async () => {
+    const db = await getDatabase();
 
-  await db.withTransactionAsync(async () => {
-    await db.runAsync('DELETE FROM cards');
-    await db.runAsync('DELETE FROM decks');
+    try {
+      await db.withTransactionAsync(async () => {
+        // Clear all and re-insert (simpler, more reliable)
+        await db.runAsync('DELETE FROM cards');
+        await db.runAsync('DELETE FROM decks');
 
-    for (const deck of decks) {
-      const deckCreatedAt = deck.cards[0]?.createdAt ?? new Date().toISOString();
-      await db.runAsync(
-        'INSERT INTO decks (id, title, archived, created_at) VALUES (?, ?, ?, ?)',
-        deck.id,
-        deck.title,
-        deck.archived ? 1 : 0,
-        deckCreatedAt
-      );
+        for (const deck of decks) {
+          const deckCreatedAt = deck.cards?.[0]?.createdAt ?? new Date().toISOString();
+          await db.runAsync(
+            'INSERT INTO decks (id, title, archived, created_at) VALUES (?, ?, ?, ?)',
+            [deck.id, deck.title || 'Untitled', deck.archived ? 1 : 0, deckCreatedAt]
+          );
 
-      for (const card of deck.cards) {
-        const optionA = card.options[0]?.text ?? '';
-        const optionB = card.options[1]?.text ?? '';
-        const optionC = card.options[2]?.text ?? '';
-        const correctOptionId = normalizeOptionId(card.correctOptionId);
-        const optionsJson = JSON.stringify(card.options);
+          if (deck.cards) {
+            for (const card of deck.cards) {
+              const optionA = card.options?.[0]?.text ?? '';
+              const optionB = card.options?.[1]?.text ?? '';
+              const optionC = card.options?.[2]?.text ?? '';
+              const correctOptionId = normalizeOptionId(card.correctOptionId);
+              const optionsJson = JSON.stringify(card.options || []);
+              const imageUri = card.imageUri?.trim() ? card.imageUri.trim() : null;
 
-        await db.runAsync(
-          `
-          INSERT INTO cards (
-            id,
-            deck_id,
-            question,
-            option_a,
-            option_b,
-            option_c,
-            options_json,
-            correct_option_id,
-            created_at,
-            last_rating
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `,
-          card.id,
-          deck.id,
-          card.question,
-          optionA,
-          optionB,
-          optionC,
-          optionsJson,
-          correctOptionId,
-          card.createdAt,
-          card.lastRating ?? null
-        );
-      }
+              await db.runAsync(
+                'INSERT INTO cards (id, deck_id, question, image_uri, option_a, option_b, option_c, options_json, correct_option_id, created_at, last_rating) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                [
+                  card.id,
+                  deck.id,
+                  card.question || '',
+                  imageUri,
+                  optionA,
+                  optionB,
+                  optionC,
+                  optionsJson,
+                  correctOptionId,
+                  card.createdAt || new Date().toISOString(),
+                  card.lastRating ?? null,
+                ]
+              );
+            }
+          }
+        }
+      });
+    } catch (error) {
+      console.error('[Storage] writeAllDecks error:', error);
+      throw error;
     }
   });
+
+  return writeQueue;
 }
 
 function normalizeOptionId(optionId: string) {
@@ -223,11 +234,12 @@ function toCard(row: CardRow): Flashcard {
 
   return {
     id: row.id,
-    question: row.question,
+    question: row.question || '',
+    imageUri: row.image_uri ?? undefined,
     options,
     correctOptionId: normalizeOptionId(row.correct_option_id),
-    createdAt: row.created_at,
-    lastRating: row.last_rating ?? undefined,
+    createdAt: row.created_at || new Date().toISOString(),
+    lastRating: (row.last_rating as Rating) ?? undefined,
   };
 }
 
@@ -244,7 +256,7 @@ export async function ensureMakiStorage(initialDecks: Deck[]) {
   const db = await getDatabase();
   const initFlag = await db.getFirstAsync<{ value: string }>(
     'SELECT value FROM app_meta WHERE key = ?',
-    INIT_FLAG_KEY
+    [INIT_FLAG_KEY]
   );
 
   if (initFlag?.value === '1') {
@@ -254,8 +266,7 @@ export async function ensureMakiStorage(initialDecks: Deck[]) {
   await writeAllDecks(initialDecks);
   await db.runAsync(
     'INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)',
-    INIT_FLAG_KEY,
-    '1'
+    [INIT_FLAG_KEY, '1']
   );
 }
 
@@ -271,21 +282,7 @@ export async function readMakiDecks() {
     'SELECT id, title, archived, created_at FROM decks ORDER BY created_at DESC'
   );
   const cardRows = await db.getAllAsync<CardRow>(
-    `
-    SELECT
-      id,
-      deck_id,
-      question,
-      option_a,
-      option_b,
-      option_c,
-      options_json,
-      correct_option_id,
-      created_at,
-      last_rating
-    FROM cards
-    ORDER BY created_at DESC
-    `
+    'SELECT id, deck_id, question, image_uri, option_a, option_b, option_c, options_json, correct_option_id, created_at, last_rating FROM cards ORDER BY created_at DESC'
   );
 
   const cardsByDeck = new Map<string, Flashcard[]>();
@@ -297,7 +294,7 @@ export async function readMakiDecks() {
 
   return deckRows.map<Deck>((row) => ({
     id: row.id,
-    title: row.title,
+    title: row.title || 'Untitled',
     archived: row.archived === 1,
     cards: cardsByDeck.get(row.id) ?? [],
   }));

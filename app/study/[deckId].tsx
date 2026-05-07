@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, View } from 'react-native';
+import { Alert, Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import Animated, { Easing, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
+import Animated, { Easing, interpolateColor, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import Swiper from 'react-native-deck-swiper';
 
 import { MakiBottomSheet } from '@/components/maki-bottom-sheet';
@@ -26,7 +26,7 @@ export default function StudyScreen() {
   const { decks, rateCard, updateCard } = useMakiStore();
   const deck = useMemo(() => decks.find((item) => item.id === deckId), [deckId, decks]);
 
-  const [sortBy, setSortBy] = useState<'newest' | 'oldest'>('newest');
+  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'random'>('newest');
   const [filterRatings, setFilterRatings] = useState<Rating[]>(ALL_RATINGS);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
@@ -34,8 +34,9 @@ export default function StudyScreen() {
   const [answered, setAnswered] = useState(false);
   const [isCorrect, setIsCorrect] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
+  const [sortModalVisible, setSortModalVisible] = useState(false);
   const [editVisible, setEditVisible] = useState(false);
-  const [draftSortBy, setDraftSortBy] = useState<'newest' | 'oldest'>('newest');
+  const [draftSortBy, setDraftSortBy] = useState<'newest' | 'oldest' | 'random'>('newest');
   const [draftRatings, setDraftRatings] = useState<Rating[]>(ALL_RATINGS);
   const [showProgress, setShowProgress] = useState(true);
   const [draftShowProgress, setDraftShowProgress] = useState(true);
@@ -43,19 +44,31 @@ export default function StudyScreen() {
   const [editOptions, setEditOptions] = useState(['', '', '']);
   const [editCorrectOptionId, setEditCorrectOptionId] = useState<OptionId>('a');
   const [sessionRatings, setSessionRatings] = useState<Record<string, Rating>>({});
+  const [imageLoadFailed, setImageLoadFailed] = useState<Record<string, true>>({});
+  const [isNavigating, setIsNavigating] = useState(false);
 
   const bannerProgress = useSharedValue(0);
+  const swipeX = useSharedValue(0);
 
   const orderedCards = useMemo(() => {
     if (!deck) {
       return [];
     }
 
-    const sorted = [...deck.cards].sort((left, right) => {
-      const leftTime = new Date(left.createdAt).getTime();
-      const rightTime = new Date(right.createdAt).getTime();
-      return sortBy === 'newest' ? rightTime - leftTime : leftTime - rightTime;
-    });
+    let sorted = [...deck.cards].map((card) => ({
+      ...card,
+      options: shuffleOptions(card.options, card.correctOptionId),
+    }));
+
+    if (sortBy === 'random') {
+      sorted = sorted.sort(() => Math.random() - 0.5);
+    } else {
+      sorted = sorted.sort((left, right) => {
+        const leftTime = new Date(left.createdAt).getTime();
+        const rightTime = new Date(right.createdAt).getTime();
+        return sortBy === 'newest' ? rightTime - leftTime : leftTime - rightTime;
+      });
+    }
 
     if (filterRatings.length === ALL_RATINGS.length) {
       return sorted;
@@ -97,14 +110,40 @@ export default function StudyScreen() {
     transform: [{ translateY: (1 - bannerProgress.value) * 24 }],
   }));
 
+  const dynamicBgStyle = useAnimatedStyle(() => {
+    const color = interpolateColor(
+      swipeX.value,
+      [-100, 0, 100],
+      [RATING_META.good.color + '44', 'transparent', RATING_META.bad.color + '44']
+    );
+    
+    return {
+      backgroundColor: selectedRating 
+        ? RATING_META[selectedRating].color + '33'
+        : color,
+    };
+  });
+
   const onAnswer = (optionId: string) => {
-    if (!currentCard || answered) {
+    if (!deck || !currentCard || answered) {
       return;
     }
 
     setSelectedOption(optionId);
     setAnswered(true);
-    setIsCorrect(optionId === currentCard.correctOptionId);
+    const correct = optionId === currentCard.correctOptionId;
+    setIsCorrect(correct);
+
+    // Auto-rate based on correctness
+    const autoRating = correct ? 'good' : 'bad';
+    setSelectedRating(autoRating);
+    setSessionRatings((current) => ({ ...current, [currentCard.id]: autoRating }));
+    rateCard(deck.id, currentCard.id, autoRating);
+
+    // Auto-advance after brief delay
+    setTimeout(() => {
+      goNext(autoRating);
+    }, 600);
   };
 
   const onRate = (rating: Rating) => {
@@ -121,26 +160,61 @@ export default function StudyScreen() {
   };
 
   const goNext = (chosenRating?: Rating) => {
-    if (!deck || !currentCard || !answered) {
+    if (!deck || !currentCard || isNavigating) {
       return;
     }
 
-    const resolvedRating = chosenRating ?? selectedRating ?? (isCorrect ? 'good' : 'bad');
-    if (!selectedRating && !chosenRating) {
-      setSessionRatings((current) => ({ ...current, [currentCard.id]: resolvedRating }));
-      rateCard(deck.id, currentCard.id, resolvedRating);
+    setIsNavigating(true);
+
+    // Only rate if explicitly choosing a rating (from rating buttons)
+    if (chosenRating) {
+      setSessionRatings((current) => ({ ...current, [currentCard.id]: chosenRating }));
+      rateCard(deck.id, currentCard.id, chosenRating);
+    } else if (answered && selectedRating) {
+      // Already answered and rated, just save the existing rating
+      rateCard(deck.id, currentCard.id, selectedRating);
     }
+    // Otherwise: just navigate without rating
 
     setAnswered(false);
     setSelectedOption(null);
     setSelectedRating(null);
+    swipeX.value = 0;
 
     if (currentIndex === orderedCards.length - 1) {
       setCurrentIndex(0);
+    } else {
+      setCurrentIndex((index) => index + 1);
+    }
+
+    setTimeout(() => setIsNavigating(false), 300);
+  };
+
+  const goPrev = () => {
+    if (!currentCard || isNavigating) {
       return;
     }
 
-    setCurrentIndex((index) => index + 1);
+    setIsNavigating(true);
+
+    // Only rate if answered and selected a rating
+    if (answered && selectedRating) {
+      rateCard(deck!.id, currentCard.id, selectedRating);
+    }
+    // Otherwise: just navigate without rating
+
+    setAnswered(false);
+    setSelectedOption(null);
+    setSelectedRating(null);
+    swipeX.value = 0;
+
+    if (currentIndex === 0) {
+      setCurrentIndex(orderedCards.length - 1);
+    } else {
+      setCurrentIndex((index) => index - 1);
+    }
+
+    setTimeout(() => setIsNavigating(false), 300);
   };
 
   const toggleDraftRating = (rating: Rating) => {
@@ -221,6 +295,7 @@ export default function StudyScreen() {
 
   return (
     <View style={styles.screen}>
+      <Animated.View style={[styles.dynamicBg, dynamicBgStyle]} />
       <View style={styles.topBar}>
         <Pressable onPress={() => router.back()} style={styles.iconButton}>
           <Ionicons name="arrow-back" color="#E2E8F0" size={20} />
@@ -259,7 +334,8 @@ export default function StudyScreen() {
           styles.contentContainer,
           currentCard ? styles.contentContainerCentered : styles.contentContainerEmpty,
         ]}
-        showsVerticalScrollIndicator={false}>
+        showsVerticalScrollIndicator={false}
+        scrollEnabled={false}>
         {!currentCard ? (
           <View style={styles.emptyBlock}>
             <Text style={styles.emptyTitle}>No cards match this rating filter.</Text>
@@ -278,12 +354,13 @@ export default function StudyScreen() {
               containerStyle={styles.swiperContainer}
               cardStyle={styles.swiperCard}
               infinite={false}
-              disableTopSwipe
-              disableBottomSwipe
+              verticalSwipe={false}
               disableLeftSwipe={!answered || !!selectedRating}
               disableRightSwipe={!answered || !!selectedRating}
               onSwipedLeft={() => onRate('good')}
               onSwipedRight={() => onRate('bad')}
+              onSwiping={(x) => { swipeX.value = x; }}
+              onSwipedAborted={() => { swipeX.value = withTiming(0); }}
               animateCardOpacity
               animateOverlayLabelsOpacity
               overlayLabels={{
@@ -298,41 +375,64 @@ export default function StudyScreen() {
               }}
               renderCard={(card) => {
                 if (!card) {
-                  return <View style={styles.card} />;
+                  return <View style={[styles.card, { height: 480 }]} />;
                 }
+
+                const normalizedImageUri = (card.imageUri ?? '').trim();
+                const shouldShowImage = normalizedImageUri.length > 0 && !imageLoadFailed[card.id];
 
                 return (
                   <View style={styles.card}>
-                    <Text style={styles.question}>{renderHighlightedText(card.question)}</Text>
+                    <ScrollView 
+                      showsVerticalScrollIndicator={true} 
+                      style={styles.cardScroll} 
+                      contentContainerStyle={styles.cardScrollContent}
+                      nestedScrollEnabled={true}>
+                      {shouldShowImage ? (
+                        <Image
+                          source={{ uri: normalizedImageUri }}
+                          style={styles.cardImage}
+                          resizeMode="cover"
+                          onLoad={() => console.log(`[Study] Image loaded: ${card.id}`)}
+                          onError={(error) => {
+                            console.log(`[Study] Image failed: ${card.id}`, error);
+                            setImageLoadFailed((current) =>
+                              current[card.id] ? current : { ...current, [card.id]: true }
+                            );
+                          }}
+                        />
+                      ) : null}
+                      <Text style={styles.question}>{renderHighlightedText(card.question)}</Text>
 
-                    <View style={styles.optionList}>
-                      {card.options.map((option, index) => {
-                        const isOptionCorrect = option.id === card.correctOptionId;
-                        const isSelected = option.id === selectedOption;
-                        const optionLabel = String.fromCharCode(65 + index);
+                      <View style={styles.optionList}>
+                        {card.options.map((option, index) => {
+                          const isOptionCorrect = option.id === card.correctOptionId;
+                          const isSelected = option.id === selectedOption;
+                          const optionLabel = String.fromCharCode(65 + index);
 
-                        const stateStyles = [
-                          styles.optionButton,
-                          answered && isSelected && !isOptionCorrect && styles.optionWrong,
-                          answered && isOptionCorrect && styles.optionCorrect,
-                        ];
+                          const stateStyles = [
+                            styles.optionButton,
+                            answered && isSelected && !isOptionCorrect && styles.optionWrong,
+                            answered && isOptionCorrect && styles.optionCorrect,
+                          ];
 
-                        return (
-                          <Pressable key={option.id} style={stateStyles} onPress={() => onAnswer(option.id)}>
-                            <View style={styles.optionLead}>
-                              <Text style={styles.optionLeadText}>{optionLabel}</Text>
-                            </View>
-                            <Text style={styles.optionText}>{option.text}</Text>
-                            {answered && isSelected && !isOptionCorrect ? (
-                              <Ionicons name="close-circle" color="#FCA5A5" size={18} />
-                            ) : null}
-                            {answered && isOptionCorrect ? (
-                              <Ionicons name="checkmark-circle" color="#6EE7B7" size={18} />
-                            ) : null}
-                          </Pressable>
-                        );
-                      })}
-                    </View>
+                          return (
+                            <Pressable key={option.id} style={stateStyles} onPress={() => onAnswer(option.id)}>
+                              <View style={styles.optionLead}>
+                                <Text style={styles.optionLeadText}>{optionLabel}</Text>
+                              </View>
+                              <Text style={styles.optionText}>{option.text}</Text>
+                              {answered && isSelected && !isOptionCorrect ? (
+                                <Ionicons name="close-circle" color="#FCA5A5" size={18} />
+                              ) : null}
+                              {answered && isOptionCorrect ? (
+                                <Ionicons name="checkmark-circle" color="#6EE7B7" size={18} />
+                              ) : null}
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    </ScrollView>
                   </View>
                 );
               }}
@@ -346,22 +446,26 @@ export default function StudyScreen() {
 
       <Animated.View style={[styles.banner, bannerStyle]}>
         <View style={styles.bannerLead}>
-          <Ionicons
-            name={selectedRating ? 'checkmark-circle' : isCorrect ? 'happy-outline' : 'alert-circle-outline'}
-            color={selectedRating ? '#34D399' : '#93C5FD'}
-            size={18}
-          />
+          <Text style={styles.bannerEmoji}>
+            {selectedRating ? '✅' : isCorrect ? '🎉' : '🙈'}
+          </Text>
           <Text style={styles.bannerText}>
-            {selectedRating ? `${RATING_META[selectedRating].label} recorded` : isCorrect ? 'Awesome! 🎉' : 'Almost! 🙈'}
+            {selectedRating ? `${RATING_META[selectedRating].label} recorded` : isCorrect ? 'Awesome!' : 'Almost!'}
           </Text>
         </View>
         <Pressable style={styles.nextButton} onPress={() => goNext()}>
-          <Text style={styles.nextText}>Next</Text>
-          <Ionicons name="arrow-forward" color="#0F172A" size={16} />
+          <Ionicons name="arrow-forward" color="#0F172A" size={18} />
         </Pressable>
       </Animated.View>
 
       <View style={styles.ratingBar}>
+        <Pressable
+          style={[styles.navButton, styles.navButtonLeft]}
+          onPress={goPrev}
+          hitSlop={10}>
+          <Ionicons name="chevron-back" color="#64748B" size={20} />
+        </Pressable>
+
         {ALL_RATINGS.map((rating) => {
           const active = selectedRating === rating;
           const disabled = !answered || !!selectedRating;
@@ -391,6 +495,13 @@ export default function StudyScreen() {
             </Pressable>
           );
         })}
+
+        <Pressable
+          style={[styles.navButton, styles.navButtonRight]}
+          onPress={() => goNext()}
+          hitSlop={10}>
+          <Ionicons name="chevron-forward" color="#64748B" size={20} />
+        </Pressable>
       </View>
 
       <MakiBottomSheet visible={settingsVisible} onClose={() => setSettingsVisible(false)} title="Flashcard settings">
@@ -398,7 +509,7 @@ export default function StudyScreen() {
           <Text style={styles.settingsLabel}>Sort by</Text>
           <Pressable
             style={styles.select}
-            onPress={() => setDraftSortBy((value) => (value === 'newest' ? 'oldest' : 'newest'))}>
+            onPress={() => setSortModalVisible(true)}>
             <Text style={styles.selectText}>{draftSortBy === 'newest' ? 'Newest first' : 'Oldest first'}</Text>
             <Ionicons name="chevron-down" color="#CBD5E1" size={18} />
           </Pressable>
@@ -416,6 +527,11 @@ export default function StudyScreen() {
                   },
                 ]}
                 onPress={() => toggleDraftRating(rating)}>
+                <Ionicons
+                  name={RATING_ICONS[rating]}
+                  color={draftRatings.includes(rating) ? RATING_META[rating].color : '#94A3B8'}
+                  size={16}
+                />
                 <Text style={styles.filterChipText}>{RATING_META[rating].label}</Text>
               </Pressable>
             ))}
@@ -457,6 +573,32 @@ export default function StudyScreen() {
               <Text style={styles.applyText}>Apply</Text>
             </Pressable>
           </View>
+        </View>
+      </MakiBottomSheet>
+
+      <MakiBottomSheet visible={sortModalVisible} onClose={() => setSortModalVisible(false)} title="Sort cards">
+        <View style={styles.sortOptions}>
+          {(['newest', 'oldest', 'random'] as const).map((option) => (
+            <Pressable
+              key={option}
+              style={[
+                styles.sortOption,
+                draftSortBy === option && styles.sortOptionActive,
+              ]}
+              onPress={() => {
+                setDraftSortBy(option);
+                setSortModalVisible(false);
+              }}>
+              <Ionicons
+                name={draftSortBy === option ? 'radio-button-on' : 'radio-button-off'}
+                color={draftSortBy === option ? '#3B82F6' : '#94A3B8'}
+                size={20}
+              />
+              <Text style={[styles.sortOptionText, draftSortBy === option && styles.sortOptionTextActive]}>
+                {option === 'newest' ? 'Newest first' : option === 'oldest' ? 'Oldest first' : 'Random'}
+              </Text>
+            </Pressable>
+          ))}
         </View>
       </MakiBottomSheet>
 
@@ -558,6 +700,14 @@ function renderHighlightedText(input: string) {
   });
 }
 
+function shuffleOptions(
+  options: { id: string; text: string }[],
+  correctOptionId: string
+): { id: string; text: string }[] {
+  const shuffled = [...options].sort(() => Math.random() - 0.5);
+  return shuffled;
+}
+
 function showNotice(message: string) {
   if (Platform.OS === 'android') {
     ToastAndroid.show(message, ToastAndroid.SHORT);
@@ -589,6 +739,13 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#0B132B',
   },
+  dynamicBg: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 300,
+  },
   centeredScreen: {
     flex: 1,
     backgroundColor: '#0B132B',
@@ -599,10 +756,15 @@ const styles = StyleSheet.create({
   topBar: {
     paddingTop: 56,
     paddingHorizontal: 16,
+    paddingBottom: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
+    zIndex: 10,
+    backgroundColor: '#223149',
+    borderBottomWidth: 1,
+    borderBottomColor: '#334155',
   },
   actionButtons: {
     flexDirection: 'row',
@@ -623,6 +785,7 @@ const styles = StyleSheet.create({
   progressWrap: {
     paddingHorizontal: 16,
     paddingTop: 14,
+    zIndex: 10,
   },
   content: {
     flex: 1,
@@ -643,7 +806,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-start',
   },
   swiperWrap: {
-    minHeight: 400,
+    minHeight: 450,
     width: '100%',
     maxWidth: 640,
     justifyContent: 'center',
@@ -652,7 +815,7 @@ const styles = StyleSheet.create({
   },
   swiperContainer: {
     width: '100%',
-    minHeight: 400,
+    minHeight: 450,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -665,17 +828,32 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     borderWidth: 1,
     borderColor: '#334155',
-    padding: 18,
+    minHeight: 320,
+    maxHeight: 500,
     width: '100%',
     maxWidth: 640,
     alignSelf: 'center',
+    overflow: 'hidden',
+  },
+  cardScroll: {
+    width: '100%',
+  },
+  cardScrollContent: {
+    flexGrow: 1,
+    padding: 18,
+  },
+  cardImage: {
+    width: '100%',
+    height: 180,
+    borderRadius: 16,
+    marginBottom: 16,
   },
   question: {
     color: '#F8FAFC',
-    fontSize: 22,
-    lineHeight: 32,
+    fontSize: 14,
+    lineHeight: 22,
     fontWeight: '700',
-    marginBottom: 20,
+    marginBottom: 16,
     textAlign: 'center',
   },
   highlightText: {
@@ -712,14 +890,14 @@ const styles = StyleSheet.create({
     flex: 1,
     color: '#E2E8F0',
     fontWeight: '600',
-    fontSize: 15,
+    fontSize: 13,
   },
   optionCorrect: {
     backgroundColor: '#064E3B',
     borderColor: '#10B981',
   },
   optionWrong: {
-    backgroundColor: '#7F1D1D',
+    backgroundColor: '#851919',
     borderColor: '#EF4444',
   },
   overlayLeft: {
@@ -762,7 +940,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 16,
     right: 16,
-    bottom: 92,
+    bottom: 112,
     backgroundColor: '#1E293B',
     borderColor: '#334155',
     borderWidth: 1,
@@ -773,31 +951,38 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     shadowColor: '#0EA5E9',
-    shadowOpacity: 0.2,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 6 },
+    elevation: 8,
   },
   bannerText: {
-    color: '#E2E8F0',
-    fontSize: 14,
-    fontWeight: '700',
+    color: '#F1F5F9',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
   bannerLead: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 10,
     flex: 1,
     paddingRight: 12,
+  },
+  bannerEmoji: {
+    fontSize: 20,
+    lineHeight: 24,
   },
   nextButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'center',
+    gap: 4,
     backgroundColor: '#FDE047',
     borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minWidth: 42,
   },
   nextText: {
     color: '#0F172A',
@@ -836,6 +1021,22 @@ const styles = StyleSheet.create({
   },
   ratingButtonDisabled: {
     opacity: 0.55,
+  },
+  navButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#223149',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  navButtonLeft: {
+    marginRight: 4,
+  },
+  navButtonRight: {
+    marginLeft: 4,
   },
   ratingText: {
     color: '#F8FAFC',
@@ -885,7 +1086,11 @@ const styles = StyleSheet.create({
     borderColor: '#334155',
     backgroundColor: '#111827',
     alignItems: 'center',
+    flexDirection: 'row',
+    gap: 6,
     paddingVertical: 10,
+    paddingHorizontal: 8,
+    justifyContent: 'center',
   },
   filterChipText: {
     color: '#E2E8F0',
@@ -1030,5 +1235,32 @@ const styles = StyleSheet.create({
   backButtonText: {
     color: '#0F172A',
     fontWeight: '800',
+  },
+  sortOptions: {
+    gap: 12,
+  },
+  sortOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    backgroundColor: '#111827',
+  },
+  sortOptionActive: {
+    borderColor: '#3B82F6',
+    backgroundColor: '#1E3A8A',
+  },
+  sortOptionText: {
+    color: '#CBD5E1',
+    fontSize: 15,
+    fontWeight: '600',
+    flex: 1,
+  },
+  sortOptionTextActive: {
+    color: '#DBEAFE',
   },
 });

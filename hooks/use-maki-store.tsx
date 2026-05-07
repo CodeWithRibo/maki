@@ -15,6 +15,7 @@ type MakiStore = {
     cardId: string,
     updates: { question: string; options: { id: string; text: string }[]; correctOptionId: string }
   ) => void;
+  resetProgress: (deckId: string) => void;
 };
 
 const MakiStoreContext = createContext<MakiStore | null>(null);
@@ -222,14 +223,25 @@ export function MakiStoreProvider({ children }: { children: React.ReactNode }) {
                       ? {
                           ...card,
                           question: updates.question.trim() || card.question,
-                          options: updates.options.map((option) => ({
-                            ...option,
-                            text: option.text.trim(),
-                          })),
+                          options: updates.options,
                           correctOptionId: updates.correctOptionId,
                         }
                       : card
                   ),
+                }
+              : deck
+          )
+        ),
+      resetProgress: (deckId) =>
+        setDecks((current) =>
+          current.map((deck) =>
+            deck.id === deckId
+              ? {
+                  ...deck,
+                  cards: deck.cards.map((card) => {
+                    const { lastRating, ...cardWithoutRating } = card;
+                    return cardWithoutRating;
+                  }),
                 }
               : deck
           )

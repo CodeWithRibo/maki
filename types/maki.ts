@@ -8,6 +8,7 @@ export type FlashcardOption = {
 export type Flashcard = {
   id: string;
   question: string;
+  imageUri?: string;
   options: FlashcardOption[];
   correctOptionId: string;
   createdAt: string;
