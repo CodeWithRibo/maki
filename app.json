@@ -2,10 +2,10 @@
   "expo": {
     "name": "Maki",
     "slug": "maki-flashcard",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/images/maki_logo.jpg",
-    "scheme": "Maki",
+    "scheme": "maki",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
@@ -24,7 +24,8 @@
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/maki_logo.jpg"
+      "favicon": "./assets/images/maki_logo.jpg",
+      "bundleAssets": false
     },
     "plugins": [
       "expo-router",
@@ -51,6 +52,12 @@
       "eas": {
         "projectId": "d52f025a-a860-49e4-ae7a-ae6fa2e0ec63"
       }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/d52f025a-a860-49e4-ae7a-ae6fa2e0ec63"
     }
   }
 }
