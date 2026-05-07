@@ -1,21 +1,108 @@
-import { useMemo, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useMemo, useState, type ReactNode } from 'react';
+import {
+  type GestureResponderEvent,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 import { MakiBottomSheet } from '@/components/maki-bottom-sheet';
 import { useMakiStore } from '@/hooks/use-maki-store';
+import type { Deck } from '@/types/maki';
+
+type DeckFilter = 'all' | 'active' | 'archived';
+type DeckSort = 'recent' | 'title' | 'cards';
+type PendingAction = { type: 'toggleArchive' | 'delete'; deckId: string } | null;
+
+const FILTER_OPTIONS: { value: DeckFilter; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'active', label: 'Active' },
+  { value: 'archived', label: 'Archived' },
+];
+
+const SORT_OPTIONS: { value: DeckSort; label: string }[] = [
+  { value: 'recent', label: 'Newest' },
+  { value: 'title', label: 'A-Z' },
+];
 
 export default function LibraryScreen() {
   const { decks, toggleArchive, deleteDeck, renameDeck, addDeck } = useMakiStore();
   const [selectedDeckId, setSelectedDeckId] = useState<string | null>(null);
+  const [filterBy, setFilterBy] = useState<DeckFilter>('all');
+  const [sortBy, setSortBy] = useState<DeckSort>('recent');
+  const [createVisible, setCreateVisible] = useState(false);
+  const [createTitle, setCreateTitle] = useState('');
+  const [editVisible, setEditVisible] = useState(false);
+  const [editTitle, setEditTitle] = useState('');
+  const [pendingAction, setPendingAction] = useState<PendingAction>(null);
 
   const selectedDeck = useMemo(
     () => decks.find((deck) => deck.id === selectedDeckId) ?? null,
     [decks, selectedDeckId]
   );
-  const activeDecks = useMemo(() => decks.filter((deck) => !deck.archived), [decks]);
-  const archivedDecks = useMemo(() => decks.filter((deck) => deck.archived), [decks]);
+  const pendingDeck = useMemo(
+    () => decks.find((deck) => deck.id === pendingAction?.deckId) ?? null,
+    [decks, pendingAction]
+  );
+
+  const activeDecks = useMemo(
+    () => sortDecks(decks.filter((deck) => !deck.archived), sortBy),
+    [decks, sortBy]
+  );
+  const archivedDecks = useMemo(
+    () => sortDecks(decks.filter((deck) => deck.archived), sortBy),
+    [decks, sortBy]
+  );
+  const visibleActiveDecks = useMemo(
+    () => (filterBy === 'archived' ? [] : activeDecks),
+    [activeDecks, filterBy]
+  );
+  const visibleArchivedDecks = useMemo(
+    () => (filterBy === 'active' ? [] : archivedDecks),
+    [archivedDecks, filterBy]
+  );
+
+
+  const handleCreateDeck = () => {
+    const title = createTitle.trim();
+    if (!title) {
+      return;
+    }
+
+    addDeck(title);
+    setCreateTitle('');
+    setCreateVisible(false);
+  };
+
+  const handleRenameDeck = () => {
+    if (!selectedDeck) {
+      return;
+    }
+
+    renameDeck(selectedDeck.id, editTitle);
+    setEditVisible(false);
+    setSelectedDeckId(null);
+    setEditTitle('');
+  };
+
+  const handleConfirmAction = () => {
+    if (!pendingAction) {
+      return;
+    }
+
+    if (pendingAction.type === 'delete') {
+      deleteDeck(pendingAction.deckId);
+    } else {
+      toggleArchive(pendingAction.deckId);
+    }
+
+    setPendingAction(null);
+  };
 
   return (
     <View style={styles.screen}>
@@ -24,47 +111,69 @@ export default function LibraryScreen() {
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}>
         <Text style={styles.header}>Library</Text>
+        <Text style={styles.subHeader}>
+          {decks.length} study sets • flashcards
+        </Text>
 
-        <Section title="Last 7 days" />
-        {activeDecks.map((deck) => (
+        <View style={styles.controlGroup}>
+          <ChipRow
+            options={FILTER_OPTIONS}
+            activeValue={filterBy}
+            onPress={(value) => setFilterBy(value)}
+          />
+          <ChipRow
+            options={SORT_OPTIONS}
+            activeValue={sortBy}
+            onPress={(value) => setSortBy(value)}
+          />
+        </View>
+
+        {visibleActiveDecks.length ? <Section title="Active Study Sets" /> : null}
+        {visibleActiveDecks.map((deck) => (
           <Pressable
             key={deck.id}
             style={styles.card}
             onPress={() => router.push({ pathname: '/study/[deckId]', params: { deckId: deck.id } })}>
-            <Text style={styles.cardTitle}>{deck.title}</Text>
-            <Text style={styles.cardSub}>{deck.cards.length} Flashcards</Text>
-            <Pressable
-              style={styles.menuButton}
-              onPress={(event) => {
+            <DeckCardContent
+              deck={deck}
+              onOpenActions={(event) => {
                 event.stopPropagation();
                 setSelectedDeckId(deck.id);
-              }}>
-              <Ionicons name="ellipsis-vertical" color="#CBD5E1" size={18} />
-            </Pressable>
+              }}
+            />
           </Pressable>
         ))}
 
-        <Section title="Archived" />
-        {archivedDecks.map((deck) => (
+        {visibleArchivedDecks.length ? <Section title="Archived" /> : null}
+        {visibleArchivedDecks.map((deck) => (
           <Pressable
             key={deck.id}
             style={[styles.card, styles.archivedCard]}
             onPress={() => router.push({ pathname: '/study/[deckId]', params: { deckId: deck.id } })}>
-            <Text style={styles.cardTitle}>{deck.title}</Text>
-            <Text style={styles.cardSub}>{deck.cards.length} Flashcards</Text>
-            <Pressable
-              style={styles.menuButton}
-              onPress={(event) => {
+            <DeckCardContent
+              deck={deck}
+              onOpenActions={(event) => {
                 event.stopPropagation();
                 setSelectedDeckId(deck.id);
-              }}>
-              <Ionicons name="ellipsis-vertical" color="#CBD5E1" size={18} />
-            </Pressable>
+              }}
+            />
           </Pressable>
         ))}
+
+        {!visibleActiveDecks.length && !visibleArchivedDecks.length ? (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyTitle}>No study sets in this view yet.</Text>
+            <Text style={styles.emptySub}>Try a different filter or create a new study set.</Text>
+          </View>
+        ) : null}
       </ScrollView>
 
-      <Pressable style={styles.fab} onPress={addDeck}>
+      <Pressable
+        style={styles.fab}
+        onPress={() => {
+          setCreateTitle('');
+          setCreateVisible(true);
+        }}>
         <Ionicons name="add" color="#0F172A" size={22} />
       </Pressable>
 
@@ -75,7 +184,8 @@ export default function LibraryScreen() {
               label="Edit"
               icon={<Ionicons name="create-outline" color="#E2E8F0" size={18} />}
               onPress={() => {
-                renameDeck(selectedDeck.id, `${selectedDeck.title} (Edited)`);
+                setEditTitle(selectedDeck.title);
+                setEditVisible(true);
                 setSelectedDeckId(null);
               }}
             />
@@ -89,7 +199,7 @@ export default function LibraryScreen() {
                 )
               }
               onPress={() => {
-                toggleArchive(selectedDeck.id);
+                setPendingAction({ type: 'toggleArchive', deckId: selectedDeck.id });
                 setSelectedDeckId(null);
               }}
             />
@@ -98,12 +208,96 @@ export default function LibraryScreen() {
               icon={<Ionicons name="trash-outline" color="#F87171" size={18} />}
               destructive
               onPress={() => {
-                deleteDeck(selectedDeck.id);
+                setPendingAction({ type: 'delete', deckId: selectedDeck.id });
                 setSelectedDeckId(null);
               }}
             />
           </View>
         ) : null}
+      </MakiBottomSheet>
+
+      <MakiBottomSheet
+        visible={createVisible}
+        onClose={() => setCreateVisible(false)}
+        title="Create study set">
+        <View style={styles.form}>
+          <TextInput
+            value={createTitle}
+            onChangeText={setCreateTitle}
+            style={styles.input}
+            placeholder="Enter study set name"
+            placeholderTextColor="#64748B"
+            autoFocus
+          />
+          <View style={styles.formActions}>
+            <Pressable style={styles.secondaryButton} onPress={() => setCreateVisible(false)}>
+              <Text style={styles.secondaryButtonText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.primaryButton, !createTitle.trim() && styles.disabledButton]}
+              onPress={handleCreateDeck}
+              disabled={!createTitle.trim()}>
+              <Text style={styles.primaryButtonText}>Create</Text>
+            </Pressable>
+          </View>
+        </View>
+      </MakiBottomSheet>
+
+      <MakiBottomSheet
+        visible={editVisible}
+        onClose={() => setEditVisible(false)}
+        title="Edit study set">
+        <View style={styles.form}>
+          <TextInput
+            value={editTitle}
+            onChangeText={setEditTitle}
+            style={styles.input}
+            placeholder="Enter study set name"
+            placeholderTextColor="#64748B"
+            autoFocus
+          />
+          <View style={styles.formActions}>
+            <Pressable style={styles.secondaryButton} onPress={() => setEditVisible(false)}>
+              <Text style={styles.secondaryButtonText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.primaryButton, !editTitle.trim() && styles.disabledButton]}
+              onPress={handleRenameDeck}
+              disabled={!editTitle.trim()}>
+              <Text style={styles.primaryButtonText}>Save changes</Text>
+            </Pressable>
+          </View>
+        </View>
+      </MakiBottomSheet>
+
+      <MakiBottomSheet
+        visible={pendingAction !== null}
+        onClose={() => setPendingAction(null)}
+        title={pendingAction?.type === 'delete' ? 'Delete study set?' : 'Update study set?'}>
+        <View style={styles.confirmBlock}>
+          <Text style={styles.confirmCopy}>
+            {pendingAction?.type === 'delete'
+              ? `Are you sure you want to delete "${pendingDeck?.title ?? 'this study set'}"?`
+              : `Are you sure you want to ${
+                  pendingDeck?.archived ? 'unarchive' : 'archive'
+                } "${pendingDeck?.title ?? 'this study set'}"?`}
+          </Text>
+          <View style={styles.formActions}>
+            <Pressable style={styles.secondaryButton} onPress={() => setPendingAction(null)}>
+              <Text style={styles.secondaryButtonText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              style={[
+                styles.primaryButton,
+                pendingAction?.type === 'delete' && styles.destructiveButton,
+              ]}
+              onPress={handleConfirmAction}>
+              <Text style={styles.primaryButtonText}>
+                {pendingAction?.type === 'delete' ? 'Delete' : 'Confirm'}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
       </MakiBottomSheet>
     </View>
   );
@@ -113,6 +307,67 @@ function Section({ title }: { title: string }) {
   return <Text style={styles.section}>{title}</Text>;
 }
 
+function DeckCardContent({
+  deck,
+  onOpenActions,
+}: {
+  deck: Deck;
+  onOpenActions: (event: GestureResponderEvent) => void;
+}) {
+  const completion = getDeckCompletion(deck);
+  const completionColor = completion >= 80 ? '#10B981' : completion >= 50 ? '#F59E0B' : '#60A5FA';
+
+  return (
+    <View>
+      <View style={styles.cardTop}>
+        <Text style={styles.cardTitle} numberOfLines={2}>
+          {deck.title}
+        </Text>
+        <View style={styles.cardControls}>
+          <ProgressCircle value={completion} color={completionColor} />
+          <Pressable style={styles.menuButton} onPress={onOpenActions}>
+            <Ionicons name="ellipsis-vertical" color="#CBD5E1" size={18} />
+          </Pressable>
+        </View>
+      </View>
+      <Text style={styles.cardSub}>{deck.cards.length} Flashcards</Text>
+    </View>
+  );
+}
+
+function ProgressCircle({ value, color }: { value: number; color: string }) {
+  return (
+    <View style={[styles.progressCircle, { borderColor: color }]}>
+      <Text style={styles.progressCircleText}>{value}%</Text>
+    </View>
+  );
+}
+
+function ChipRow<T extends string>({
+  options,
+  activeValue,
+  onPress,
+}: {
+  options: { value: T; label: string }[];
+  activeValue: T;
+  onPress: (value: T) => void;
+}) {
+  return (
+    <View style={styles.chipRow}>
+      {options.map((option) => (
+        <Pressable
+          key={option.value}
+          style={[styles.chip, activeValue === option.value && styles.chipActive]}
+          onPress={() => onPress(option.value)}>
+          <Text style={[styles.chipText, activeValue === option.value && styles.chipTextActive]}>
+            {option.label}
+          </Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
 function ActionRow({
   label,
   icon,
@@ -120,7 +375,7 @@ function ActionRow({
   onPress,
 }: {
   label: string;
-  icon: React.ReactNode;
+  icon: ReactNode;
   destructive?: boolean;
   onPress: () => void;
 }) {
@@ -130,6 +385,31 @@ function ActionRow({
       <Text style={[styles.sheetActionText, destructive && styles.destructive]}>{label}</Text>
     </Pressable>
   );
+}
+
+function sortDecks(decks: Deck[], sortBy: DeckSort) {
+  return [...decks].sort((left, right) => {
+    if (sortBy === 'title') {
+      return left.title.localeCompare(right.title);
+    }
+
+    if (sortBy === 'cards') {
+      return right.cards.length - left.cards.length;
+    }
+
+    const leftRecent = Math.max(...left.cards.map((card) => new Date(card.createdAt).getTime()), 0);
+    const rightRecent = Math.max(...right.cards.map((card) => new Date(card.createdAt).getTime()), 0);
+    return rightRecent - leftRecent;
+  });
+}
+
+function getDeckCompletion(deck: Deck) {
+  if (!deck.cards.length) {
+    return 0;
+  }
+
+  const completedCards = deck.cards.filter((card) => card.lastRating).length;
+  return Math.round((completedCards / deck.cards.length) * 100);
 }
 
 const styles = StyleSheet.create({
@@ -142,56 +422,112 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: 18,
-    paddingTop: 62,
+    paddingTop: 58,
     paddingBottom: 140,
   },
   header: {
     color: '#F8FAFC',
-    fontSize: 34,
+    fontSize: 33,
     fontWeight: '800',
+    letterSpacing: 0.4,
+  },
+  subHeader: {
+    color: '#94A3B8',
+    marginTop: 8,
     marginBottom: 18,
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  controlGroup: {
+    gap: 10,
+    marginBottom: 8,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  chip: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    backgroundColor: '#1A243D',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  chipActive: {
+    borderColor: '#3B82F6',
+    backgroundColor: '#1E3A8A',
+  },
+  chipText: {
+    color: '#CBD5E1',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  chipTextActive: {
+    color: '#DBEAFE',
   },
   section: {
     color: '#94A3B8',
     fontWeight: '700',
     fontSize: 13,
     textTransform: 'uppercase',
-    marginTop: 10,
+    marginTop: 16,
     marginBottom: 10,
     letterSpacing: 0.9,
   },
   card: {
-    backgroundColor: '#1C2541',
+    backgroundColor: '#17233C',
     borderRadius: 18,
     paddingVertical: 18,
     paddingHorizontal: 16,
-    marginBottom: 12,
+    marginBottom: 14,
     borderWidth: 1,
-    borderColor: '#334155',
-    position: 'relative',
+    borderColor: '#2D3E5C',
+  },
+  cardTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  cardControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   archivedCard: {
     opacity: 0.88,
   },
   cardTitle: {
     color: '#F8FAFC',
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '800',
     letterSpacing: 0.5,
-    marginBottom: 8,
-    paddingRight: 34,
+    marginBottom: 10,
+    flex: 1,
   },
   cardSub: {
     color: '#94A3B8',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '500',
   },
   menuButton: {
-    position: 'absolute',
-    right: 12,
-    bottom: 12,
-    padding: 8,
+    padding: 7,
     borderRadius: 10,
+    backgroundColor: '#243552',
+  },
+  progressCircle: {
+    height: 34,
+    width: 34,
+    borderRadius: 17,
+    borderWidth: 3,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0F172A',
+  },
+  progressCircleText: {
+    color: '#E2E8F0',
+    fontSize: 9,
+    fontWeight: '800',
   },
   fab: {
     position: 'absolute',
@@ -208,6 +544,82 @@ const styles = StyleSheet.create({
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 4 },
     elevation: 7,
+  },
+  form: {
+    gap: 14,
+    marginTop: 6,
+  },
+  input: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    backgroundColor: '#0F172A',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  formActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+  },
+  secondaryButton: {
+    borderRadius: 10,
+    backgroundColor: '#334155',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  secondaryButtonText: {
+    color: '#E2E8F0',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  primaryButton: {
+    borderRadius: 10,
+    backgroundColor: '#3B82F6',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  destructiveButton: {
+    backgroundColor: '#DC2626',
+  },
+  disabledButton: {
+    opacity: 0.5,
+  },
+  primaryButtonText: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  confirmBlock: {
+    marginTop: 6,
+    gap: 16,
+  },
+  confirmCopy: {
+    color: '#CBD5E1',
+    fontSize: 14,
+    lineHeight: 21,
+  },
+  emptyState: {
+    marginTop: 16,
+    padding: 16,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#334155',
+    backgroundColor: '#1A243D',
+  },
+  emptyTitle: {
+    color: '#E2E8F0',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  emptySub: {
+    color: '#94A3B8',
+    marginTop: 6,
+    fontSize: 13,
+    fontWeight: '500',
   },
   sheetActionList: {
     gap: 4,

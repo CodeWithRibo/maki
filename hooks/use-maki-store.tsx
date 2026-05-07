@@ -7,7 +7,7 @@ type MakiStore = {
   toggleArchive: (deckId: string) => void;
   deleteDeck: (deckId: string) => void;
   renameDeck: (deckId: string, title: string) => void;
-  addDeck: () => void;
+  addDeck: (title?: string) => void;
   rateCard: (deckId: string, cardId: string, rating: Rating) => void;
 };
 
@@ -162,11 +162,11 @@ export function MakiStoreProvider({ children }: { children: React.ReactNode }) {
         setDecks((current) =>
           current.map((deck) => (deck.id === deckId ? { ...deck, title: title.trim() || deck.title } : deck))
         ),
-      addDeck: () =>
+      addDeck: (title) =>
         setDecks((current) => [
           {
             id: `deck-${Date.now()}`,
-            title: 'NEW STUDY SET',
+            title: title?.trim() || 'NEW STUDY SET',
             archived: false,
             cards: [
               {
