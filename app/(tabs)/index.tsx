@@ -1,22 +1,26 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
+  Alert,
   type GestureResponderEvent,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
+  ToastAndroid,
   View,
 } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as DocumentPicker from 'expo-document-picker';
 
 import { MakiBottomSheet } from '@/components/maki-bottom-sheet';
 import { useMakiStore } from '@/hooks/use-maki-store';
-import type { Deck } from '@/types/maki';
+import type { Deck, Flashcard } from '@/types/maki';
 
 type DeckFilter = 'all' | 'active' | 'archived';
-type DeckSort = 'recent' | 'title' | 'cards';
+type DeckSort = 'recent' | 'title';
 type PendingAction = { type: 'toggleArchive' | 'delete'; deckId: string } | null;
 
 const FILTER_OPTIONS: { value: DeckFilter; label: string }[] = [
@@ -37,7 +41,9 @@ export default function LibraryScreen() {
   const [sortBy, setSortBy] = useState<DeckSort>('recent');
   const [createVisible, setCreateVisible] = useState(false);
   const [createTitle, setCreateTitle] = useState('');
+  const [pendingImportedCards, setPendingImportedCards] = useState<Flashcard[] | null>(null);
   const [editVisible, setEditVisible] = useState(false);
+  const [editingDeckId, setEditingDeckId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
 
@@ -66,26 +72,78 @@ export default function LibraryScreen() {
     () => (filterBy === 'active' ? [] : archivedDecks),
     [archivedDecks, filterBy]
   );
+  const totalCards = useMemo(() => decks.reduce((count, deck) => count + deck.cards.length, 0), [decks]);
 
+  useEffect(() => {
+    if (!editVisible || !editingDeckId || !editTitle.trim()) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      renameDeck(editingDeckId, editTitle);
+    }, 700);
+
+    return () => clearTimeout(timer);
+  }, [editTitle, editVisible, editingDeckId, renameDeck]);
 
   const handleCreateDeck = () => {
     const title = createTitle.trim();
     if (!title) {
+      showNotice('Enter a study set name first.');
+      return;
+    }
+    if (!pendingImportedCards || pendingImportedCards.length === 0) {
+      showNotice('CSV upload is required. Import a valid CSV first.');
       return;
     }
 
-    addDeck(title);
+    addDeck(title, pendingImportedCards);
+    showNotice('Study set created and auto-saved.');
     setCreateTitle('');
+    setPendingImportedCards(null);
     setCreateVisible(false);
   };
 
+  const handleImportCsv = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['text/csv', 'text/comma-separated-values', 'text/plain'],
+        multiple: false,
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled) {
+        return;
+      }
+
+      const selectedFile = result.assets[0];
+      const response = await fetch(selectedFile.uri);
+      const csvText = await response.text();
+      const csvResult = parseQuestionAnswerCsv(csvText);
+      if (!csvResult.valid) {
+        showNotice(csvResult.message);
+        return;
+      }
+
+      const cards = buildCardsFromQuestionAnswerRows(csvResult.rows);
+      const deckTitle = selectedFile.name.replace(/\.[^/.]+$/, '').trim().toUpperCase() || 'IMPORTED SET';
+      setCreateTitle(deckTitle);
+      setPendingImportedCards(cards);
+      showNotice(`CSV loaded: ${cards.length} flashcards ready to create.`);
+    } catch {
+      showNotice('CSV import failed. Please check the file format.');
+    }
+  };
+
   const handleRenameDeck = () => {
-    if (!selectedDeck) {
+    if (!editingDeckId) {
       return;
     }
 
-    renameDeck(selectedDeck.id, editTitle);
+    renameDeck(editingDeckId, editTitle);
+    showNotice('Study set updated and auto-saved.');
     setEditVisible(false);
+    setEditingDeckId(null);
     setSelectedDeckId(null);
     setEditTitle('');
   };
@@ -97,8 +155,10 @@ export default function LibraryScreen() {
 
     if (pendingAction.type === 'delete') {
       deleteDeck(pendingAction.deckId);
+      showNotice('Study set deleted and auto-saved.');
     } else {
       toggleArchive(pendingAction.deckId);
+      showNotice('Study set updated and auto-saved.');
     }
 
     setPendingAction(null);
@@ -112,7 +172,7 @@ export default function LibraryScreen() {
         showsVerticalScrollIndicator={false}>
         <Text style={styles.header}>Library</Text>
         <Text style={styles.subHeader}>
-          {decks.length} study sets • flashcards
+          {decks.length} study sets • {totalCards} flashcards
         </Text>
 
         <View style={styles.controlGroup}>
@@ -172,6 +232,7 @@ export default function LibraryScreen() {
         style={styles.fab}
         onPress={() => {
           setCreateTitle('');
+          setPendingImportedCards(null);
           setCreateVisible(true);
         }}>
         <Ionicons name="add" color="#0F172A" size={22} />
@@ -184,6 +245,7 @@ export default function LibraryScreen() {
               label="Edit"
               icon={<Ionicons name="create-outline" color="#E2E8F0" size={18} />}
               onPress={() => {
+                setEditingDeckId(selectedDeck.id);
                 setEditTitle(selectedDeck.title);
                 setEditVisible(true);
                 setSelectedDeckId(null);
@@ -230,6 +292,11 @@ export default function LibraryScreen() {
             autoFocus
           />
           <View style={styles.formActions}>
+            <Pressable style={styles.secondaryButton} onPress={handleImportCsv}>
+              <Text style={styles.secondaryButtonText}>
+                {pendingImportedCards?.length ? `CSV Loaded (${pendingImportedCards.length})` : 'Upload CSV'}
+              </Text>
+            </Pressable>
             <Pressable style={styles.secondaryButton} onPress={() => setCreateVisible(false)}>
               <Text style={styles.secondaryButtonText}>Cancel</Text>
             </Pressable>
@@ -245,7 +312,10 @@ export default function LibraryScreen() {
 
       <MakiBottomSheet
         visible={editVisible}
-        onClose={() => setEditVisible(false)}
+        onClose={() => {
+          setEditVisible(false);
+          setEditingDeckId(null);
+        }}
         title="Edit study set">
         <View style={styles.form}>
           <TextInput
@@ -257,7 +327,12 @@ export default function LibraryScreen() {
             autoFocus
           />
           <View style={styles.formActions}>
-            <Pressable style={styles.secondaryButton} onPress={() => setEditVisible(false)}>
+            <Pressable
+              style={styles.secondaryButton}
+              onPress={() => {
+                setEditVisible(false);
+                setEditingDeckId(null);
+              }}>
               <Text style={styles.secondaryButtonText}>Cancel</Text>
             </Pressable>
             <Pressable
@@ -393,14 +468,234 @@ function sortDecks(decks: Deck[], sortBy: DeckSort) {
       return left.title.localeCompare(right.title);
     }
 
-    if (sortBy === 'cards') {
-      return right.cards.length - left.cards.length;
-    }
-
     const leftRecent = Math.max(...left.cards.map((card) => new Date(card.createdAt).getTime()), 0);
     const rightRecent = Math.max(...right.cards.map((card) => new Date(card.createdAt).getTime()), 0);
     return rightRecent - leftRecent;
   });
+}
+
+function parseQuestionAnswerCsv(input: string) {
+  const rows = input
+    .split(/\r?\n/)
+    .map((line) => parseCsvLine(line))
+    .filter((columns) => columns.length >= 2);
+
+  if (!rows.length) {
+    return {
+      valid: false,
+      message: 'Invalid CSV format. Use Vaia format headers like: Question,Answer A,Answer A is correct,...',
+      rows: [] as {
+        question: string;
+        options: { id: string; text: string }[];
+        correctOptionId: string;
+      }[],
+    };
+  }
+
+  const [header, ...dataRows] = rows;
+  const headerQuestion = header[0]?.trim();
+  if (headerQuestion !== 'Question') {
+    return {
+      valid: false,
+      message: 'Invalid CSV header. First column must be exactly: Question',
+      rows: [] as {
+        question: string;
+        options: { id: string; text: string }[];
+        correctOptionId: string;
+      }[],
+    };
+  }
+
+  const answerPairs: { answerIndex: number; correctnessIndex: number; optionId: string }[] = [];
+  for (let index = 1; index < header.length; index += 2) {
+    const answerHeader = header[index]?.trim();
+    const correctHeader = header[index + 1]?.trim();
+    const answerMatch = /^Answer\s+([A-G])$/i.exec(answerHeader ?? '');
+    if (!answerMatch || correctHeader !== `${answerHeader} is correct`) {
+      return {
+        valid: false,
+        message:
+          'Invalid CSV header format. Expected: Question,Answer A,Answer A is correct,Answer B,Answer B is correct,...',
+        rows: [] as {
+          question: string;
+          options: { id: string; text: string }[];
+          correctOptionId: string;
+        }[],
+      };
+    }
+
+    answerPairs.push({
+      answerIndex: index,
+      correctnessIndex: index + 1,
+      optionId: answerMatch[1].toLowerCase(),
+    });
+  }
+
+  if (!answerPairs.length) {
+    return {
+      valid: false,
+      message: 'CSV must contain at least one answer pair: Answer A and Answer A is correct.',
+      rows: [] as {
+        question: string;
+        options: { id: string; text: string }[];
+        correctOptionId: string;
+      }[],
+    };
+  }
+
+  const mappedRows = dataRows
+    .map((columns, rowIndex) => {
+      const question = (columns[0] ?? '').trim();
+      const options: { id: string; text: string }[] = [];
+      let correctOptionId = '';
+
+      for (const pair of answerPairs) {
+        const answerText = (columns[pair.answerIndex] ?? '').trim();
+        const isCorrect = (columns[pair.correctnessIndex] ?? '').trim().toLowerCase();
+
+        if (!answerText && !isCorrect) {
+          continue;
+        }
+        if (!answerText || !isCorrect) {
+          return {
+            valid: false,
+            message: `Invalid CSV row ${rowIndex + 2}. Each answer needs both text and correctness value.`,
+            row: null,
+          };
+        }
+        if (!['yes', 'no'].includes(isCorrect)) {
+          return {
+            valid: false,
+            message: `Invalid CSV row ${rowIndex + 2}. Correctness must be Yes or No.`,
+            row: null,
+          };
+        }
+
+        options.push({ id: pair.optionId, text: answerText });
+        if (isCorrect === 'yes') {
+          if (correctOptionId) {
+            return {
+              valid: false,
+              message: `Invalid CSV row ${rowIndex + 2}. Multiple answers are marked Yes.`,
+              row: null,
+            };
+          }
+          correctOptionId = pair.optionId;
+        }
+      }
+
+      if (!question) {
+        return {
+          valid: false,
+          message: `Invalid CSV row ${rowIndex + 2}. Question is required.`,
+          row: null,
+        };
+      }
+      if (options.length < 2) {
+        return {
+          valid: false,
+          message: `Invalid CSV row ${rowIndex + 2}. At least two answers are required.`,
+          row: null,
+        };
+      }
+      if (!correctOptionId) {
+        return {
+          valid: false,
+          message: `Invalid CSV row ${rowIndex + 2}. One answer must be marked Yes.`,
+          row: null,
+        };
+      }
+
+      return { valid: true, message: '', row: { question, options, correctOptionId } };
+    })
+    .filter((item) => item.row !== null || item.message.length > 0);
+
+  if (!mappedRows.length) {
+    return {
+      valid: false,
+      message: 'CSV has no valid data rows.',
+      rows: [] as {
+        question: string;
+        options: { id: string; text: string }[];
+        correctOptionId: string;
+      }[],
+    };
+  }
+
+  const invalidRow = mappedRows.find((row) => !row.valid);
+  if (invalidRow) {
+    return {
+      valid: false,
+      message: invalidRow.message,
+      rows: [] as {
+        question: string;
+        options: { id: string; text: string }[];
+        correctOptionId: string;
+      }[],
+    };
+  }
+
+  return {
+    valid: true,
+    message: '',
+    rows: mappedRows.map((row) => row.row).filter((row) => row !== null),
+  };
+}
+
+function parseCsvLine(line: string) {
+  const fields: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const nextChar = line[index + 1];
+
+    if (char === '"' && inQuotes && nextChar === '"') {
+      current += '"';
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (char === ',' && !inQuotes) {
+      fields.push(current);
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  fields.push(current);
+  return fields;
+}
+
+function buildCardsFromQuestionAnswerRows(
+  rows: { question: string; options: { id: string; text: string }[]; correctOptionId: string }[]
+) {
+  return rows.map<Flashcard>((row, rowIndex) => {
+    return {
+      id: `imported-${Date.now()}-${rowIndex}`,
+      question: row.question,
+      options: row.options,
+      correctOptionId: row.correctOptionId,
+      createdAt: new Date(Date.now() - rowIndex * 1000).toISOString(),
+    };
+  });
+}
+
+function showNotice(message: string) {
+  if (Platform.OS === 'android') {
+    ToastAndroid.show(message, ToastAndroid.SHORT);
+    return;
+  }
+
+  Alert.alert('Maki', message);
 }
 
 function getDeckCompletion(deck: Deck) {

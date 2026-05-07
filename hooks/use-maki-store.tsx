@@ -1,14 +1,20 @@
-import { createContext, useContext, useMemo, useState } from 'react';
+import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
-import type { Deck, Rating } from '@/types/maki';
+import { ensureMakiStorage, persistMakiDecks, readMakiDecks } from '@/services/maki-storage';
+import type { Deck, Flashcard, Rating } from '@/types/maki';
 
 type MakiStore = {
   decks: Deck[];
   toggleArchive: (deckId: string) => void;
   deleteDeck: (deckId: string) => void;
   renameDeck: (deckId: string, title: string) => void;
-  addDeck: (title?: string) => void;
+  addDeck: (title?: string, cards?: Flashcard[]) => void;
   rateCard: (deckId: string, cardId: string, rating: Rating) => void;
+  updateCard: (
+    deckId: string,
+    cardId: string,
+    updates: { question: string; options: { id: string; text: string }[]; correctOptionId: string }
+  ) => void;
 };
 
 const MakiStoreContext = createContext<MakiStore | null>(null);
@@ -149,6 +155,26 @@ const initialDecks: Deck[] = [
 
 export function MakiStoreProvider({ children }: { children: React.ReactNode }) {
   const [decks, setDecks] = useState<Deck[]>(initialDecks);
+  const [isHydrated, setIsHydrated] = useState(false);
+
+  useEffect(() => {
+    const hydrateStore = async () => {
+      await ensureMakiStorage(initialDecks);
+      const storedDecks = await readMakiDecks();
+      setDecks(storedDecks);
+      setIsHydrated(true);
+    };
+
+    hydrateStore();
+  }, []);
+
+  useEffect(() => {
+    if (!isHydrated) {
+      return;
+    }
+
+    persistMakiDecks(decks);
+  }, [decks, isHydrated]);
 
   const value = useMemo<MakiStore>(
     () => ({
@@ -162,47 +188,13 @@ export function MakiStoreProvider({ children }: { children: React.ReactNode }) {
         setDecks((current) =>
           current.map((deck) => (deck.id === deckId ? { ...deck, title: title.trim() || deck.title } : deck))
         ),
-      addDeck: (title) =>
+      addDeck: (title, cards) =>
         setDecks((current) => [
           {
             id: `deck-${Date.now()}`,
             title: title?.trim() || 'NEW STUDY SET',
             archived: false,
-            cards: [
-              {
-                id: `new-${Date.now()}-1`,
-                question: 'What is the capital of Japan?',
-                options: [
-                  { id: 'a', text: 'Kyoto' },
-                  { id: 'b', text: 'Osaka' },
-                  { id: 'c', text: 'Tokyo' },
-                ],
-                correctOptionId: 'c',
-                createdAt: new Date().toISOString(),
-              },
-              {
-                id: `new-${Date.now()}-2`,
-                question: 'React state is typically managed with which hook?',
-                options: [
-                  { id: 'a', text: 'useFetch' },
-                  { id: 'b', text: 'useState' },
-                  { id: 'c', text: 'useRouter' },
-                ],
-                correctOptionId: 'b',
-                createdAt: new Date(Date.now() - 1000).toISOString(),
-              },
-              {
-                id: `new-${Date.now()}-3`,
-                question: 'Which HTTP method is commonly used to update data?',
-                options: [
-                  { id: 'a', text: 'PUT' },
-                  { id: 'b', text: 'GET' },
-                  { id: 'c', text: 'TRACE' },
-                ],
-                correctOptionId: 'a',
-                createdAt: new Date(Date.now() - 2000).toISOString(),
-              },
-            ],
+            cards: cards ?? [],
           },
           ...current,
         ]),
@@ -214,6 +206,29 @@ export function MakiStoreProvider({ children }: { children: React.ReactNode }) {
                   ...deck,
                   cards: deck.cards.map((card) =>
                     card.id === cardId ? { ...card, lastRating: rating } : card
+                  ),
+                }
+              : deck
+          )
+        ),
+      updateCard: (deckId, cardId, updates) =>
+        setDecks((current) =>
+          current.map((deck) =>
+            deck.id === deckId
+              ? {
+                  ...deck,
+                  cards: deck.cards.map((card) =>
+                    card.id === cardId
+                      ? {
+                          ...card,
+                          question: updates.question.trim() || card.question,
+                          options: updates.options.map((option) => ({
+                            ...option,
+                            text: option.text.trim(),
+                          })),
+                          correctOptionId: updates.correctOptionId,
+                        }
+                      : card
                   ),
                 }
               : deck
