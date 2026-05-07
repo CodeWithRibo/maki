@@ -1,10 +1,10 @@
 {
   "expo": {
     "name": "Maki",
-    "slug": "Maki",
+    "slug": "maki-flashcard",
     "version": "1.0.1",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+    "icon": "./assets/images/maki_logo.jpg",
     "scheme": "Maki",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
