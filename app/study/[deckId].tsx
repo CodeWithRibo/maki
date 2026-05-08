@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, View } from 'react-native';
+import { Image, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, ToastAndroid, View } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Animated, { Easing, interpolateColor, useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
@@ -57,7 +57,7 @@ export default function StudyScreen() {
 
     let sorted = [...deck.cards].map((card) => ({
       ...card,
-      options: shuffleOptions(card.options, card.correctOptionId),
+      options: shuffleOptions(card.options, card.correctOptionId, card.id),
     }));
 
     if (sortBy === 'random') {
@@ -139,18 +139,14 @@ export default function StudyScreen() {
     setSelectedRating(autoRating);
     setSessionRatings((current) => ({ ...current, [currentCard.id]: autoRating }));
     rateCard(deck.id, currentCard.id, autoRating);
-
-    // Auto-advance after brief delay
-    setTimeout(() => {
-      goNext(autoRating);
-    }, 600);
   };
 
   const onRate = (rating: Rating) => {
-    if (!deck || !currentCard || !answered || selectedRating) {
+    if (!deck || !currentCard || !answered) {
       return;
     }
 
+    // Allow changing rating even if already selected
     setSelectedRating(rating);
     setSessionRatings((current) => ({ ...current, [currentCard.id]: rating }));
     rateCard(deck.id, currentCard.id, rating);
@@ -355,8 +351,8 @@ export default function StudyScreen() {
               cardStyle={styles.swiperCard}
               infinite={false}
               verticalSwipe={false}
-              disableLeftSwipe={!answered || !!selectedRating}
-              disableRightSwipe={!answered || !!selectedRating}
+              disableLeftSwipe={!answered}
+              disableRightSwipe={!answered}
               onSwipedLeft={() => onRate('good')}
               onSwipedRight={() => onRate('bad')}
               onSwiping={(x) => { swipeX.value = x; }}
@@ -447,10 +443,10 @@ export default function StudyScreen() {
       <Animated.View style={[styles.banner, bannerStyle]}>
         <View style={styles.bannerLead}>
           <Text style={styles.bannerEmoji}>
-            {selectedRating ? '✅' : isCorrect ? '🎉' : '🙈'}
+            {isCorrect ? '🎉' : '🙈'}
           </Text>
           <Text style={styles.bannerText}>
-            {selectedRating ? `${RATING_META[selectedRating].label} recorded` : isCorrect ? 'Awesome!' : 'Almost!'}
+            {isCorrect ? 'Awesome!' : 'Almost!'}
           </Text>
         </View>
         <Pressable style={styles.nextButton} onPress={() => goNext()}>
@@ -468,7 +464,7 @@ export default function StudyScreen() {
 
         {ALL_RATINGS.map((rating) => {
           const active = selectedRating === rating;
-          const disabled = !answered || !!selectedRating;
+          const disabled = !answered;
 
           return (
             <Pressable
@@ -702,19 +698,37 @@ function renderHighlightedText(input: string) {
 
 function shuffleOptions(
   options: { id: string; text: string }[],
-  correctOptionId: string
+  correctOptionId: string,
+  seed: string
 ): { id: string; text: string }[] {
-  const shuffled = [...options].sort(() => Math.random() - 0.5);
-  return shuffled;
+  // Seeded shuffle using Fisher-Yates with deterministic randomness
+  const array = [...options];
+  let hash = simpleStringHash(seed);
+  
+  for (let i = array.length - 1; i > 0; i--) {
+    // Generate pseudo-random value for this iteration
+    hash = (hash * 1664525 + 1013904223) & 0xffffffff;
+    const j = Math.abs(hash) % (i + 1);
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  
+  return array;
+}
+
+function simpleStringHash(str: string): number {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  return hash;
 }
 
 function showNotice(message: string) {
   if (Platform.OS === 'android') {
     ToastAndroid.show(message, ToastAndroid.SHORT);
-    return;
   }
-
-  Alert.alert('Maki', message);
 }
 
 function SwipeOverlay({
